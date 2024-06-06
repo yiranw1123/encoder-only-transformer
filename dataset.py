@@ -28,8 +28,9 @@ class EnglishSentenceDataSet(Dataset):
         encoded_sentence = self.tokenizer.encode(sentence).ids
         num_padding_tokens = self.max_length - len(encoded_sentence) - 2
 
-        if num_padding_tokens < 0 :
-            raise ValueError("Sentence is too long")
+        if len(encoded_sentence) > self.max_length - 2:
+            encoded_sentence = encoded_sentence[:self.max_length - 2]
+            num_padding_tokens = 0
         
         padded_encoded_tokens = torch.cat([
             self.sos_token,
@@ -96,6 +97,7 @@ def get_or_build_tokenizer(config, dataset):
         tokenizer.pre_tokenizer = Whitespace()
         trainer = WordLevelTrainer(special_tokens=["[UNK]", "[PAD]", "[SOS]", "[EOS]"], min_frequency=2)
         tokenizer.train_from_iterator(get_all_sentences(dataset), trainer = trainer)
+        tokenizer.enable_truncation(max_length = config['max_seq_len'])
         tokenizer.save(str(tokenizer_path))
     else:
         tokenizer = Tokenizer.from_file(str(tokenizer_path))
