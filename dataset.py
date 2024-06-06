@@ -42,6 +42,8 @@ class EnglishSentenceDataSet(Dataset):
         assert padded_encoded_tokens.size(0) == self.max_length
 
         return{
+            'index': index,
+            'sentence': sentence,
             'encoder_input':padded_encoded_tokens,
             'attention_mask':(padded_encoded_tokens != self.pad_token).unsqueeze(0).unsqueeze(0).int(),
             'target': torch.tensor(target, dtype = torch.long)
@@ -95,7 +97,7 @@ def get_or_build_tokenizer(config, dataset):
     if not Path.exists(tokenizer_path):
         tokenizer = Tokenizer(WordLevel(unk_token = "[UNK]"))
         tokenizer.pre_tokenizer = Whitespace()
-        trainer = WordLevelTrainer(special_tokens=["[UNK]", "[PAD]", "[SOS]", "[EOS]"], min_frequency=2)
+        trainer = WordLevelTrainer(special_tokens=["[UNK]", "[PAD]", "[SOS]", "[EOS]"], min_frequency=1)
         tokenizer.train_from_iterator(get_all_sentences(dataset), trainer = trainer)
         tokenizer.enable_truncation(max_length = config['max_seq_len'])
         tokenizer.save(str(tokenizer_path))

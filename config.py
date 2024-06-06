@@ -2,7 +2,7 @@ from pathlib import Path
 
 def get_config():
     return {
-        "train_file_name":'./data/train.txt',
+        "train_file_name":'./data/subtrain.txt',
         "test_file_name": './data/subtest.txt',
         
         # training params
@@ -13,7 +13,7 @@ def get_config():
 
         #model params
         "num_hidden_layers": 12,
-        "max_seq_len": 48,
+        "max_seq_len": 50,
         'd_ff': 3072, # feed-forward layer size
         "d_model": 768,
         "num_attention_heads": 12,
