@@ -1,12 +1,50 @@
 from dataset import prepare_dataset
 from config import get_config
-from model import TransformerForSentenceClassification
 import torch
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn as nn
 from tqdm import tqdm
 import numpy as np
+from bertviz.neuron_view import show
+from model import Encoder, InputEmbedding, MultiHeadAttentionBlock, FeedForwardBlock, EncoderBlock, PositionalEncoding, SentenceClassificationTransformer, ClassificationLayer
+
+def build_model(config, vocab_size):
+
+    d_model = config['d_model']
+    num_labels = config['num_labels']
+    max_seq_len = config['max_seq_len']
+    dropout = config['hidden_dropout_prob']
+    d_ff = config['d_ff']
+    h = config['num_attention_heads']
+    num_layers = config['num_hidden_layers']
+
+
+    src_embd = InputEmbedding(d_model, vocab_size)
+    src_pos_embd = PositionalEncoding(d_model, max_seq_len)
+
+    encoder_blocks = []
+
+    for _ in range(num_layers):
+        encoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
+        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
+        encoder_block = EncoderBlock(d_model, encoder_self_attention_block, feed_forward_block, dropout)
+        encoder_blocks.append(encoder_block)
+
+    # Create the encoder and decoder
+    encoder = Encoder(d_model, nn.ModuleList(encoder_blocks))
+
+    classifier = ClassificationLayer(d_model, num_labels)
+
+    model = SentenceClassificationTransformer(encoder, src_embd, src_pos_embd, classifier)
+
+    # Initialize the parameters
+    for p in model.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_uniform_(p)
+    
+    return model
+
 
 # Defining function to evaluate the model on the validation dataset
 # num_examples = 2, two examples per run
@@ -29,7 +67,7 @@ def run_validation(model, validation_ds, criterion, tokenizer, device, print_msg
             targets = batch['target'].to(device)
             
             
-            outputs = model.forward(inputs)
+            outputs = model.forward(inputs, attention_mask)
             valid_loss += criterion(outputs, targets)
             num_batches += 1
 
@@ -42,8 +80,6 @@ def run_validation(model, validation_ds, criterion, tokenizer, device, print_msg
         accuracy = (np.array(all_predictions) == np.array(all_targets)).mean()
         print(f'Validation Accuracy: {accuracy * 100:.2f}%')
 
-
-            
 
 # Function to construct the path for saving and retrieving model weights
 def get_weights_file_path(config, epoch: str):
@@ -61,7 +97,7 @@ def train_model(config):
     vocab_size = tokenizer.get_vocab_size()
     # Creating model directory to store weights
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
-    model = TransformerForSentenceClassification(config, vocab_size).to(device)
+    model = build_model(config, vocab_size).to(device)
 
     # Tensorboard
     writer = SummaryWriter(config['experiment_name'])
@@ -93,14 +129,18 @@ def train_model(config):
             
             # Loading input data and masks onto the GPU
             inputs = batch['encoder_input'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
+            src_mask = batch['attention_mask'].to(device)
             targets = batch['target'].to(device)
             
             # Running tensors through the Transformer
-            output = model.forward(inputs)
+            output = model.forward(inputs, src_mask)
             
             # Computing loss between model's output and true labels
             loss = criterion(output, targets)
+
+            if torch.isnan(loss):
+                print("NaN loss encountered")
+                continue  # Skip this batch
             
             # Updating progress bar
             batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}"})

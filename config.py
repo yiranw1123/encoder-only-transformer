@@ -2,7 +2,7 @@ from pathlib import Path
 
 def get_config():
     return {
-        "train_file_name":'./data/subtrain.txt',
+        "train_file_name":'./data/train2.txt',
         "test_file_name": './data/subtest.txt',
         
         # training params

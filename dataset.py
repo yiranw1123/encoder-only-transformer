@@ -91,7 +91,6 @@ def get_all_sentences(df):
     for sentence in df['sentence']:
         yield sentence
 
-
 def get_or_build_tokenizer(config, dataset):
     tokenizer_path = Path(config['tokenizer_file'])
     if not Path.exists(tokenizer_path):

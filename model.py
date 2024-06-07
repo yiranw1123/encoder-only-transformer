@@ -2,22 +2,34 @@ import torch
 import torch.nn as nn
 import math
 
-class InputEmbedding(nn.Module):
-    def __init__(self, config, vocab_size):
+class LayerNormalization(nn.Module):
+    def __init__(self, d_model, eps: float = 10 ** -6)-> None:
         super().__init__()
-        self.d_model = config['d_model']
-        self.vocab_size = vocab_size
-        self.embeddings = nn.Embedding(self.vocab_size, self.d_model) # vocab_size * d_model
+        self.eps = eps
+        self.alpha = nn.Parameter(torch.ones(d_model))
+        self.bias = nn.Parameter(torch.zeros(d_model))
+
+    def forward(self, x):
+        mean = x.mean(dim = -1, keepdim = True)
+        std = x.std(dim = -1, keepdim = True)
+        return self.alpha * (x - mean) / (std + self.eps) + self.bias
+
+
+class InputEmbedding(nn.Module):
+    def __init__(self, d_model, vocab_size):
+        super().__init__()
+        self.d_model = d_model
+        self.embeddings = nn.Embedding(vocab_size, d_model) # vocab_size * d_model
     def forward(self, x):
         return self.embeddings(x) * math.sqrt(self.d_model)
     
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_seq_length):
+    def __init__(self, d_model, max_seq_len):
         super(PositionalEncoding, self).__init__()
         
-        pe = torch.zeros(max_seq_length, d_model)
-        position = torch.arange(0, max_seq_length, dtype=torch.float).unsqueeze(1)
+        pe = torch.zeros(max_seq_len, d_model)
+        position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model))
         
         pe[:, 0::2] = torch.sin(position * div_term)
@@ -29,112 +41,121 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:x.size(1), :].requires_grad_(False)
     
 
-class FeedForward(nn.Module):
+class FeedForwardBlock(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, d_model, d_ff, dropout):
         super().__init__()
-        self.linear1 = nn.Linear(config["d_model"], config['d_ff'])
-        self.linear2 = nn.Linear(config["d_ff"], config['d_model'])
-        self.gelu = nn.GELU()
-        self.dropout = nn.Dropout(config['hidden_dropout_prob'])
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.linear2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
         x = self.linear1(x)
-        x = self.gelu(x)
-        x = self.linear2(x)
+        x = torch.relu(x)
         x = self.dropout(x)
+        x = self.linear2(x)
         return x
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, config):
-        super(MultiHeadAttention, self).__init__()
-        d_model = config['d_model']
-        num_heads = config['num_attention_heads']
-        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
-        
-        self.d_model = config['d_model']
-        self.num_heads = config['num_attention_heads']
-        self.d_k = d_model // num_heads
-        
-        self.W_q = nn.Linear(d_model, d_model)
-        self.W_k = nn.Linear(d_model, d_model)
-        self.W_v = nn.Linear(d_model, d_model)
-        self.W_o = nn.Linear(d_model, d_model)
-        
-    def scaled_dot_product_attention(self, Q, K, V, mask=None):
-        attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
-        if mask is not None:
-            attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
-        attn_probs = torch.softmax(attn_scores, dim=-1)
-        output = torch.matmul(attn_probs, V)
-        return output
-        
-    def split_heads(self, x):
-        batch_size, seq_length, d_model = x.size()
-        return x.view(batch_size, seq_length, self.num_heads, self.d_k).transpose(1, 2)
-        
-    def combine_heads(self, x):
-        batch_size, _, seq_length, d_k = x.size()
-        return x.transpose(1, 2).contiguous().view(batch_size, seq_length, self.d_model)
-        
-    def forward(self, Q, K, V, mask=None):
-        Q = self.split_heads(self.W_q(Q))
-        K = self.split_heads(self.W_k(K))
-        V = self.split_heads(self.W_v(V))
-        
-        attn_output = self.scaled_dot_product_attention(Q, K, V, mask)
-        output = self.W_o(self.combine_heads(attn_output))
-        return output
 
+class MultiHeadAttentionBlock(nn.Module):
+    def __init__(self, d_model, h, dropout):
+        super().__init__()
+
+        assert d_model % h == 0, "d_model must be divisible by num_heads"
+        
+        self.h = h
+        self.d_k = d_model // h
+        
+        self.w_q = nn.Linear(d_model, d_model)
+        self.w_k = nn.Linear(d_model, d_model)
+        self.w_v = nn.Linear(d_model, d_model)
+        self.w_o = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        
+    @staticmethod
+    def attention(Q,K,V, mask, dropout:nn.Dropout):
+        d_k = Q.shape[-1]
+
+        attention_scores = (Q @ K.transpose(-2,-1)) / math.sqrt(d_k)
+
+        if mask is not None:
+            attention_scores.masked_fill_(mask == 0, -1e-9)
+        attention_scores = attention_scores.softmax(dim = -1) #(batch, h, seq_len, d_k)
+
+        if dropout is not None:
+            attention_scores = dropout(attention_scores)
+        
+        return (attention_scores @ V), attention_scores
+
+
+    def forward(self, Q, K, V, mask=None):
+        Q = self.w_q(Q)
+        K = self.w_k(K)
+        V = self.w_v(V)
+
+        #(batch, seq_len, h, d_k) -> (batch, h, seq_len, d_k)
+        Q = Q.view(Q.shape[0], Q.shape[1], self.h, self.d_k).transpose(1, 2)
+        K = K.view(K.shape[0], K.shape[1], self.h, self.d_k).transpose(1, 2)
+        V = V.view(V.shape[0], V.shape[1], self.h, self.d_k).transpose(1, 2)
+        
+        x, self.attention_scores = MultiHeadAttentionBlock.attention(Q,K,V,mask, self.dropout)
+        #(batch, seq_len, h, d_k) ---> (batch, seq_len, d_model)
+        x = x.transpose(1, 2).contiguous().view(x.shape[0], -1, self.h * self.d_k)
+        # (batch, seq_len, d_model)
+        return self.w_o(x)
+
+class ResidualConnection(nn.Module):
+    def __init__(self, d_model, dropout):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.norm = LayerNormalization(d_model)
+    
+    def forward(self, x, sublayer):
+        return x + self.dropout(sublayer(self.norm(x)))
 
 class EncoderBlock(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, d_model: int, self_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float) ->  None:
         super().__init__()
-        self.d_model = config['d_model']
-        self.layer_norm_1 = nn.LayerNorm(self.d_model)
-        self.layer_norm_2 = nn.LayerNorm(self.d_model)
-        self.attention = MultiHeadAttention(config)
-        self.feed_forward = FeedForward(config)
+        self.self_attention_block = self_attention_block
+        self.feed_forward_block = feed_forward_block
+        self.residual_connections = nn.ModuleList([ResidualConnection(d_model, dropout) for _ in range(2)])
 
-    def forward(self, x):
-        hidden_state = self.layer_norm_1(x)
-        x = x + self.attention(x, x, x)
-        x = x + self.feed_forward(self.layer_norm_2(x))
+    def forward(self, x, mask):
+        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x,x,x,mask))
+        x = self.residual_connections[1](x, self.feed_forward_block)
         return x
     
-
-class TransformerEncoder(nn.Module):
-    def __init__(self, config, vocab_size):
+class Encoder(nn.Module):
+    def __init__(self, d_model, layers):
         super().__init__()
-        self.num_layers = config['num_hidden_layers']
-        self.layers = nn.ModuleList([EncoderBlock(config) for _ in range(self.num_layers)])
+        self.layers = layers
+        self.norm = LayerNormalization(d_model)
     
-    def forward(self, x):
+    def forward(self, x, mask):
         for layer in self.layers:
-            x = layer(x)
-        return x
+            x = layer(x, mask)
+        return self.norm(x)
 
-
-class TransformerForSentenceClassification(nn.Module):
-
-    def __init__(self, config, vocab_size):
+class ClassificationLayer(nn.Module):
+    def __init__(self, d_model, num_labels):
         super().__init__()
-        d_model = config['d_model']
-        num_labels = config['num_labels']
-        max_seq_length = config['max_seq_len']
-
-        self.tokens_embedding = InputEmbedding(config, vocab_size)
-        self.positional_embedding = PositionalEncoding(d_model, max_seq_length)
-        self.encoder = TransformerEncoder(config, vocab_size=vocab_size)
-        self.dropout = nn.Dropout(config['hidden_dropout_prob'])
         self.classifier = nn.Linear(d_model, num_labels)
 
-
     def forward(self, x):
-        x = self.tokens_embedding(x)
-        x = self.positional_embedding(x)
-        x = self.encoder(x)[:, 0 ,:]
-        x = self.dropout(x)
-        x = self.classifier(x)
-        return x
+        return self.classifier(x)
+
+class SentenceClassificationTransformer(nn.Module):
+    def __init__(self, encoder, src_embd, src_pos_embd, classifier):
+        super().__init__()
+        self.encoder = encoder
+        self.src_embd = src_embd
+        self.src_pos_embd = src_pos_embd
+        self.classifier = classifier
+    
+    def forward(self, src, src_mask):
+        src = self.src_embd(src)
+        src = self.src_pos_embd(src)
+        src = self.encoder(src, src_mask)[:, 0, :]
+        src = self.classifier(src)
+        return src
