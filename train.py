@@ -1,5 +1,5 @@
 from dataset import prepare_dataset
-from config import get_config
+from config import get_config, latest_weights_file_path
 import torch
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
@@ -8,6 +8,14 @@ from tqdm import tqdm
 import numpy as np
 from bertviz.neuron_view import show
 from model import Encoder, InputEmbedding, MultiHeadAttentionBlock, FeedForwardBlock, EncoderBlock, PositionalEncoding, SentenceClassificationTransformer, ClassificationLayer
+def initialize_weights(module):
+    if isinstance(module, nn.Linear):
+        nn.init.xavier_uniform_(module.weight)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Embedding):
+        nn.init.normal_(module.weight, mean=0, std=1)
+
 
 def build_model(config, vocab_size):
 
@@ -80,15 +88,6 @@ def run_validation(model, validation_ds, criterion, tokenizer, device, print_msg
         accuracy = (np.array(all_predictions) == np.array(all_targets)).mean()
         print(f'Validation Accuracy: {accuracy * 100:.2f}%')
 
-
-# Function to construct the path for saving and retrieving model weights
-def get_weights_file_path(config, epoch: str):
-    model_folder = config['model_folder'] # Extracting model folder from the config
-    model_basename = config['model_basename'] # Extracting the base name for model files
-    model_filename = f"{model_basename}{epoch}.pt" # Building filename
-    return str(Path('.')/ model_folder/ model_filename) # Combining current directory, the model folder, and the model filename
-
-
 def train_model(config):
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu") 
     print(f"Using device: {device}")
@@ -98,6 +97,7 @@ def train_model(config):
     # Creating model directory to store weights
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
     model = build_model(config, vocab_size).to(device)
+    model.apply(initialize_weights)
 
     # Tensorboard
     writer = SummaryWriter(config['experiment_name'])
@@ -109,11 +109,23 @@ def train_model(config):
     # Initializing epoch and global step variables
     initial_epoch = 0
     global_step = 0
+
+    preload = config['preload']
+    model_filename = latest_weights_file_path(config) if preload == 'latest' else get_weights_file_path(config, preload) if preload else None
+    if model_filename:
+        print(f'Preloading model {model_filename}')
+        state = torch.load(model_filename)
+        model.load_state_dict(state['model_state_dict'])
+        initial_epoch = state['epoch'] + 1
+        optimizer.load_state_dict(state['optimizer_state_dict'])
+        global_step = state['global_step']
+    else:
+        print('No model to preload, starting from scratch')
     
     # Initializing CrossEntropyLoss function for training
     # We ignore padding tokens when computing loss, as they are not relevant for the learning process
     # We also apply label_smoothing to prevent overfitting
-    criterion = nn.CrossEntropyLoss(ignore_index = tokenizer.token_to_id('[PAD]'), label_smoothing = 0.1).to(device)
+    criterion = nn.CrossEntropyLoss().to(device)
 
         # Iterating over each epoch from the 'initial_epoch' variable up to
     # the number of epochs informed in the config
@@ -131,6 +143,9 @@ def train_model(config):
             inputs = batch['encoder_input'].to(device)
             src_mask = batch['attention_mask'].to(device)
             targets = batch['target'].to(device)
+
+            if torch.isnan(inputs).any():
+                print('invalid input detected at iteration ', i)
             
             # Running tensors through the Transformer
             output = model.forward(inputs, src_mask)
@@ -164,7 +179,7 @@ def train_model(config):
         run_validation(model, val_dataloader, criterion, tokenizer, device, lambda msg: batch_iterator.write(msg), global_step, writer)
          
         # Saving model
-        model_filename = get_weights_file_path(config, f'{epoch:02d}')
+        model_filename = get_weights_file_path(config, f'{epoch+1:02d}')
         # Writting current model state to the 'model_filename'
         torch.save({
             'epoch': epoch, # Current epoch

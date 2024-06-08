@@ -21,7 +21,7 @@ class InputEmbedding(nn.Module):
         self.d_model = d_model
         self.embeddings = nn.Embedding(vocab_size, d_model) # vocab_size * d_model
     def forward(self, x):
-        return self.embeddings(x) * math.sqrt(self.d_model)
+        return self.embeddings(x)
     
 
 class PositionalEncoding(nn.Module):
@@ -152,10 +152,15 @@ class SentenceClassificationTransformer(nn.Module):
         self.src_embd = src_embd
         self.src_pos_embd = src_pos_embd
         self.classifier = classifier
-    
-    def forward(self, src, src_mask):
+
+    def encode(self, src, src_mask):
         src = self.src_embd(src)
         src = self.src_pos_embd(src)
         src = self.encoder(src, src_mask)[:, 0, :]
+        return src
+
+    
+    def forward(self, src, src_mask):
+        src = self.encode(src, src_mask)
         src = self.classifier(src)
         return src

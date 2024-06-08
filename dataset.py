@@ -45,7 +45,7 @@ class EnglishSentenceDataSet(Dataset):
             'index': index,
             'sentence': sentence,
             'encoder_input':padded_encoded_tokens,
-            'attention_mask':(padded_encoded_tokens != self.pad_token).unsqueeze(0).unsqueeze(0).int(),
+            'attention_mask':(padded_encoded_tokens != self.pad_token).unsqueeze(0).unsqueeze(0).int(), #(1, 1, seq_len)
             'target': torch.tensor(target, dtype = torch.long)
         }
 
