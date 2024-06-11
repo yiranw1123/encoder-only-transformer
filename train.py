@@ -1,13 +1,13 @@
 from dataset import prepare_dataset
-from config import get_config, latest_weights_file_path
+from config import get_config, latest_weights_file_path, get_weights_file_path
 import torch
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn as nn
 from tqdm import tqdm
 import numpy as np
-from bertviz.neuron_view import show
 from model import Encoder, InputEmbedding, MultiHeadAttentionBlock, FeedForwardBlock, EncoderBlock, PositionalEncoding, SentenceClassificationTransformer, ClassificationLayer
+
 def initialize_weights(module):
     if isinstance(module, nn.Linear):
         nn.init.xavier_uniform_(module.weight)
@@ -16,16 +16,15 @@ def initialize_weights(module):
     elif isinstance(module, nn.Embedding):
         nn.init.normal_(module.weight, mean=0, std=1)
 
-
 def build_model(config, vocab_size):
 
     d_model = config['d_model']
     num_labels = config['num_labels']
     max_seq_len = config['max_seq_len']
-    dropout = config['hidden_dropout_prob']
+    dropout = config['dropout']
     d_ff = config['d_ff']
-    h = config['num_attention_heads']
-    num_layers = config['num_hidden_layers']
+    h = config['n_head']
+    num_layers = config['n_layers']
 
 
     src_embd = InputEmbedding(d_model, vocab_size)
@@ -92,7 +91,7 @@ def train_model(config):
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu") 
     print(f"Using device: {device}")
     
-    train_dataloader, val_dataloader, tokenizer = prepare_dataset(config=config)
+    train_dataloader, val_dataloader, test_dataloader, tokenizer = prepare_dataset(config=config)
     vocab_size = tokenizer.get_vocab_size()
     # Creating model directory to store weights
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
